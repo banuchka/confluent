@@ -72,6 +72,7 @@ import stat
 import struct
 import time
 import traceback
+import syslog
 
 try:
     from fcntl import flock, LOCK_EX, LOCK_UN, LOCK_SH
