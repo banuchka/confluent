@@ -569,6 +569,10 @@ class Logger(object):
                 if not textrecord.endswith('\n'):
                     textrecord += '\n'
             files = self.handler.try_emit(binrecord, textrecord)
+            tosyslog=str(textrecord)
+            if self.isconsole and ltype == 2:
+               syslog.syslog("MSG_FROM_CONSOLE "+self.logname+" :"+tosyslog)
+            syslog.syslog(self.logname+" :"+tosyslog)
             if not files:
                 self.handler.emit(binrecord, textrecord)
                 flock(textfile, LOCK_UN)
