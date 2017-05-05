@@ -573,7 +573,8 @@ class Logger(object):
             tosyslog=str(textrecord)
             if self.isconsole and ltype == 2:
                syslog.syslog("MSG_FROM_CONSOLE "+self.logname+" :"+tosyslog)
-            syslog.syslog(self.logname+" :"+tosyslog)
+            else:
+               syslog.syslog(self.logname+" :"+tosyslog)
             if not files:
                 self.handler.emit(binrecord, textrecord)
                 flock(textfile, LOCK_UN)
