@@ -12,7 +12,8 @@ Group: Development/Libraries
 BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-buildroot
 Prefix: %{_prefix}
 BuildArch: noarch
-Requires: python-pyghmi, python-eventlet, python-greenlet, python-crypto >= 2.6.1, confluent_client, pyparsing, python-paramiko, python-dns
+BuildRequires: python, python-setuptools
+Requires: python-pyghmi, python-eventlet, python-greenlet, python-crypto >= 2.6.1, confluent_client, python-pyparsing, python-paramiko, python-dnspython
 Vendor: Jarrod Johnson <jjohnson2@lenovo.com>
 Url: http://xcat.sf.net/
 
@@ -41,3 +42,14 @@ rm -rf $RPM_BUILD_ROOT
 
 %files -f INSTALLED_FILES
 %defattr(-,root,root)
+/opt/confluent
+/opt/confluent/bin
+/opt/confluent/lib
+/opt/confluent/lib/python
+/opt/confluent/lib/python/confluent
+/opt/confluent/lib/python/confluent/config
+/opt/confluent/lib/python/confluent/interface
+/opt/confluent/lib/python/confluent/plugins
+/opt/confluent/lib/python/confluent/plugins/configuration
+/opt/confluent/lib/python/confluent/plugins/hardwaremanagement
+/opt/confluent/lib/python/confluent/plugins/shell
