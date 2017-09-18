@@ -1,7 +1,7 @@
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 # Copyright 2014 IBM Corporation
-# Copyright 2015 Lenovo
+# Copyright 2015-2017 Lenovo
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -46,6 +46,35 @@ def humanify_nodename(nodename):
     """
     return [int(text) if text.isdigit() else text.lower()
             for text in re.split(numregex, nodename)]
+
+
+class ReverseNodeRange(object):
+    """Abbreviate a set of nodes to a shorter noderange representation
+
+    :param nodes: List of nodes as a list, tuple, etc.
+    :param config: Config manager
+    """
+
+    def __init__(self, nodes, config):
+        self.cfm = config
+        self.nodes = set(nodes)
+
+
+    @property
+    def noderange(self):
+        subsetgroups = []
+        for group in self.cfm.get_groups(sizesort=True):
+            nl = set(
+                self.cfm.get_nodegroup_attributes(group).get('nodes', []))
+            if len(nl) > len(self.nodes) or not nl:
+                continue
+            if not nl - self.nodes:
+                subsetgroups.append(group)
+                self.nodes -= nl
+                if not self.nodes:
+                    break
+        return ','.join(sorted(subsetgroups) + sorted(self.nodes))
+
 
 
 # TODO: pagination operators <pp.nums and >pp.nums for begin and end respective
@@ -170,6 +199,17 @@ class NodeRange(object):
         
     def _expandstring(self, element, filternodes=None):
         prefix = ''
+        if element[0][0] in ('/', '~'):
+            element = ''.join(element)
+            nameexpression = element[1:]
+            if self.cfm is None:
+                raise Exception('Verification configmanager required')
+            return set(self.cfm.filter_nodenames(nameexpression, filternodes))
+        elif '=' in element[0] or '!~' in element[0]:
+            element = ''.join(element)
+            if self.cfm is None:
+                raise Exception('Verification configmanager required')
+            return set(self.cfm.filter_node_attributes(element, filternodes))
         for idx in xrange(len(element)):
             if element[idx][0] == '[':
                 nodes = set([])
@@ -191,19 +231,10 @@ class NodeRange(object):
                     nodes |= NodeRange(
                         grpcfg['noderange']['value'], self.cfm).nodes
                 return nodes
-        if '-' in element and ':' not in element:
-            return self.expandrange(element, '-')
-        elif ':' in element:  # : range for less ambiguity
+        if ':' in element:  # : range for less ambiguity
             return self.expandrange(element, ':')
-        elif '=' in element or '!~' in element:
-            if self.cfm is None:
-                raise Exception('Verification configmanager required')
-            return set(self.cfm.filter_node_attributes(element, filternodes))
-        elif element[0] in ('/', '~'):
-            nameexpression = element[1:]
-            if self.cfm is None:
-                raise Exception('Verification configmanager required')
-            return set(self.cfm.filter_nodenames(nameexpression, filternodes))
+        elif '-' in element:
+            return self.expandrange(element, '-')
         elif '+' in element:
             element, increment = element.split('+')
             try:
