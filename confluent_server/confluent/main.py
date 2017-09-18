@@ -39,6 +39,7 @@ except ImportError:
     #On platforms without pwd, give up on the sockapi in general and be http
     #only for now
     pass
+import confluent.discovery.core as disco
 import eventlet
 dbgif = False
 if  map(int, (eventlet.__version__.split('.'))) > [0, 18]:
@@ -162,7 +163,7 @@ def dumptrace(signalname, frame):
             continue
         if not o:
             continue
-        ht.write('Thread trace:\n')
+        ht.write('Thread trace: ({0})\n'.format(id(o)))
         ht.write(''.join(traceback.format_stack(o.gr_frame)))
     ht.close()
 
@@ -203,7 +204,10 @@ def setlimits():
 
 def run():
     setlimits()
-    signal.signal(signal.SIGUSR1, dumptrace)
+    try:
+        signal.signal(signal.SIGUSR1, dumptrace)
+    except AttributeError:
+        pass   # silly windows
     if havefcntl:
         _checkpidfile()
     conf.init_config()
@@ -230,14 +234,18 @@ def run():
             os.remove('/var/run/confluent/dbg.sock')
         except OSError:
             pass  # We are not expecting the file to exist
-        dbgsock = eventlet.listen("/var/run/confluent/dbg.sock",
-                                   family=socket.AF_UNIX)
-        eventlet.spawn_n(backdoor.backdoor_server, dbgsock)
+        try:
+            dbgsock = eventlet.listen("/var/run/confluent/dbg.sock",
+                                       family=socket.AF_UNIX)
+            eventlet.spawn_n(backdoor.backdoor_server, dbgsock)
+        except AttributeError:
+            pass  # Windows...
         os.umask(oumask)
     http_bind_host, http_bind_port = _get_connector_config('http')
     sock_bind_host, sock_bind_port = _get_connector_config('socket')
     webservice = httpapi.HttpApi(http_bind_host, http_bind_port)
     webservice.start()
+    disco.start_detection()
     try:
         sockservice = sockapi.SockApi(sock_bind_host, sock_bind_port)
         sockservice.start()

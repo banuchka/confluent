@@ -1,5 +1,5 @@
 # Copyright 2014 IBM Corporation
-# Copyright 2015-2016 Lenovo
+# Copyright 2015-2017 Lenovo
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 
 import atexit
 import confluent.exceptions as exc
+import confluent.firmwaremanager as firmwaremanager
 import confluent.interface.console as conapi
 import confluent.messages as msg
 import confluent.util as util
@@ -30,13 +31,34 @@ console = eventlet.import_patched('pyghmi.ipmi.console')
 ipmicommand = eventlet.import_patched('pyghmi.ipmi.command')
 import socket
 
+
+# There is something not right with the RLocks used in pyghmi when
+# eventlet comes into play.  It seems like sometimes on acquire,
+# it calls _get_ident and it isn't the id(greenlet) and so
+# a thread deadlocks itself due to identity crisis?
+# However, since we are not really threaded, the operations being protected
+# are not actually dangerously multiplexed...  so we can replace with
+# a null context manager for now
+class NullLock(object):
+
+    def donothing(self, *args, **kwargs):
+        return 1
+
+    __enter__ = donothing
+    __exit__ = donothing
+    acquire = donothing
+    release = donothing
+
 console.session.select = eventlet.green.select
 console.session.threading = eventlet.green.threading
+console.session.WAITING_SESSIONS = NullLock()
+console.session.KEEPALIVE_SESSIONS = NullLock()
 console.session.socket.getaddrinfo = eventlet.support.greendns.getaddrinfo
 
 
 def exithandler():
-    console.session.iothread.join()
+    if console.session.iothread is not None:
+        console.session.iothread.join()
 
 atexit.register(exithandler)
 
@@ -50,6 +72,15 @@ sensor_categories = {
     'power': frozenset(['Current', 'Battery']),
     'fans': frozenset(['Fan', 'Cooling Device']),
 }
+
+
+class EmptySensor(object):
+    def __init__(self, name):
+        self.name = name
+        self.value = None
+        self.states = ['Unavailable']
+        self.units = None
+        self.health = 'ok'
 
 
 def hex2bin(hexstring):
@@ -235,6 +266,7 @@ class IpmiConsole(conapi.Console):
                                                  password=self.password,
                                                  kg=self.kg, force=True,
                                                  iohandler=self.handle_data)
+            self.solconnection.outputlock = NullLock()
             while not self.solconnection.connected and not self.broken:
                 w = eventlet.event.Event()
                 _ipmiwaiters.append(w)
@@ -300,7 +332,6 @@ def perform_requests(operator, nodes, element, cfg, inputdata):
         pass
 
 
-
 def perform_request(operator, node, element,
                     configdata, inputdata, cfg, results):
         try:
@@ -341,6 +372,7 @@ class IpmiHandler(object):
         connparams = get_conn_params(node, self.cfg)
         self.ipmicmd = None
         self.inputdata = inputdata
+        self.tenant = cfg.tenant
         tenant = cfg.tenant
         if ((node, tenant) not in persistent_ipmicmds or
                 not persistent_ipmicmds[(node, tenant)].ipmi_session.logged):
@@ -361,7 +393,7 @@ class IpmiHandler(object):
                     ipmisess.wait_for_rsp(180)
                 if not (self.broken or self.loggedin):
                     raise exc.TargetEndpointUnreachable(
-                        "Login process to " + bmc + " died")
+                        "Login process to " + connparams['bmc'] + " died")
             except socket.gaierror as ge:
                 if ge[0] == -2:
                     raise exc.TargetEndpointUnreachable(ge[1])
@@ -408,6 +440,8 @@ class IpmiHandler(object):
             self.handle_sensors()
         elif self.element[0] == 'configuration':
             self.handle_configuration()
+        elif self.element[:3] == ['inventory', 'firmware', 'updates']:
+            self.handle_update()
         elif self.element[0] == 'inventory':
             self.handle_inventory()
         elif self.element == ['events', 'hardware', 'log']:
@@ -418,6 +452,16 @@ class IpmiHandler(object):
             self.handle_license()
         else:
             raise Exception('Not Implemented')
+
+    def handle_update(self):
+        u = firmwaremanager.Updater(self.node, self.ipmicmd.update_firmware,
+                                    self.inputdata.filename, self.tenant,
+                                    bank=self.inputdata.bank)
+        self.output.put(
+            msg.CreatedResource(
+                'nodes/{0}/inventory/firmware/updates/active/{1}'.format(
+                    self.node, u.name)))
+
 
     def handle_configuration(self):
         if self.element[1:3] == ['management_controller', 'alerts']:
@@ -599,29 +643,31 @@ class IpmiHandler(object):
             self.sensormap[simplify_name(resourcename)] = resourcename
 
     def read_sensors(self, sensorname):
-        try:
-            if sensorname == 'all':
-                sensors = self.ipmicmd.get_sensor_descriptions()
-                readings = []
-                for sensor in filter(self.match_sensor, sensors):
-                    try:
-                        reading = self.ipmicmd.get_sensor_reading(
-                            sensor['name'])
-                    except pygexc.IpmiException as ie:
-                        if ie.ipmicode == 203:
-                            continue
-                        raise
-                    if hasattr(reading, 'health'):
-                        reading.health = _str_health(reading.health)
-                    readings.append(reading)
-                self.output.put(msg.SensorReadings(readings, name=self.node))
-            else:
-                self.make_sensor_map()
-                if sensorname not in self.sensormap:
-                    self.output.put(
-                        msg.ConfluentTargetNotFound(self.node,
-                                                    'Sensor not found'))
-                    return
+        if sensorname == 'all':
+            sensors = self.ipmicmd.get_sensor_descriptions()
+            readings = []
+            for sensor in filter(self.match_sensor, sensors):
+                try:
+                    reading = self.ipmicmd.get_sensor_reading(
+                        sensor['name'])
+                except pygexc.IpmiException as ie:
+                    if ie.ipmicode == 203:
+                        self.output.put(msg.SensorReadings([EmptySensor(
+                            sensor['name'])], name=self.node))
+                        continue
+                    raise
+                if hasattr(reading, 'health'):
+                    reading.health = _str_health(reading.health)
+                readings.append(reading)
+            self.output.put(msg.SensorReadings(readings, name=self.node))
+        else:
+            self.make_sensor_map()
+            if sensorname not in self.sensormap:
+                self.output.put(
+                    msg.ConfluentTargetNotFound(self.node,
+                                                'Sensor not found'))
+                return
+            try:
                 reading = self.ipmicmd.get_sensor_reading(
                     self.sensormap[sensorname])
                 if hasattr(reading, 'health'):
@@ -629,8 +675,13 @@ class IpmiHandler(object):
                 self.output.put(
                     msg.SensorReadings([reading],
                                        name=self.node))
-        except pygexc.IpmiException:
-            self.output.put(msg.ConfluentTargetTimeout(self.node))
+            except pygexc.IpmiException as ie:
+                if ie.ipmicode == 203:
+                    self.output.put(msg.ConfluentResourceUnavailable(
+                        self.node, 'Unavailable'
+                    ))
+                else:
+                    self.output.put(msg.ConfluentTargetTimeout(self.node))
 
     def list_inventory(self):
         try:
@@ -947,9 +998,16 @@ def update(nodes, element, configmanager, inputdata):
 
 def retrieve(nodes, element, configmanager, inputdata):
     initthread()
-    return perform_requests('read', nodes, element, configmanager, inputdata)
+    if '/'.join(element).startswith('inventory/firmware/updates/active'):
+        return firmwaremanager.list_updates(nodes, configmanager.tenant,
+                                            element)
+    else:
+        return perform_requests('read', nodes, element, configmanager, inputdata)
 
 def delete(nodes, element, configmanager, inputdata):
     initthread()
+    if '/'.join(element).startswith('inventory/firmware/updates/active'):
+        return firmwaremanager.remove_updates(nodes, configmanager.tenant,
+                                              element)
     return perform_requests(
         'delete', nodes, element, configmanager, inputdata)

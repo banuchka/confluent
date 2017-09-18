@@ -15,15 +15,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import codecs
 import optparse
 import os
+import re
+import signal
 import sys
+
+try:
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+except AttributeError:
+    pass
 path = os.path.dirname(os.path.realpath(__file__))
 path = os.path.realpath(os.path.join(path, '..', 'lib', 'python'))
 if path.startswith('/opt'):
     sys.path.append(path)
 
 import confluent.client as client
+
+sys.stdout = codecs.getwriter('utf8')(sys.stdout)
+
+filters = []
 
 
 def pretty(text):
@@ -70,17 +82,36 @@ def printerror(res, node=None):
             exitcode = 1
 
 
-argparser = optparse.OptionParser(usage="Usage: %prog <noderange>")
+url = '/noderange/{0}/inventory/hardware/all/all'
+
+argparser = optparse.OptionParser(
+    usage="Usage: %prog <noderange> [serial|model|uuid|mac]")
 (options, args) = argparser.parse_args()
 try:
     noderange = sys.argv[1]
 except IndexError:
     argparser.print_help()
     sys.exit(1)
+if len(args) > 1:
+    if args[1] == 'firm':
+        os.execlp('nodefirmware', 'nodefirmware', noderange)
+    else:
+        url = '/noderange/{0}/inventory/hardware/all/system'
+        for arg in args:
+            for arg in arg.split(','):
+                if arg == 'serial':
+                    filters.append(re.compile('serial number'))
+                elif arg == 'model':
+                    filters.append(re.compile('^model'))
+                    filters.append(re.compile('product name'))
+                elif arg == 'uuid':
+                    filters.append(re.compile('uuid'))
+                elif arg == 'mac':
+                    filters.append(re.compile('mac address'))
+                    url = '/noderange/{0}/inventory/hardware/all/all'
 try:
     session = client.Command()
-    for res in session.read('/noderange/{0}/inventory/hardware/all/all'.format(
-            noderange)):
+    for res in session.read(url.format(noderange)):
         printerror(res)
         if 'databynode' not in res:
             continue
@@ -91,7 +122,8 @@ try:
             for inv in res['databynode'][node]['inventory']:
                 prefix = inv['name']
                 if not inv['present']:
-                    print '{0}: {1}: Not Present'.format(node, prefix)
+                    if not filters:
+                        print '{0}: {1}: Not Present'.format(node, prefix)
                     continue
                 info = inv['information']
                 info.pop('board_extra', None)
@@ -99,9 +131,16 @@ try:
                 info.pop('chassis_extra', None)
                 info.pop('product_extra', None)
                 if 'memory_type' in info:
-                    print_mem_info(node, prefix, info)
+                    if not filters:
+                        print_mem_info(node, prefix, info)
                     continue
                 for datum in info:
+                    if filters:
+                        for filter in filters:
+                            if filter.match(datum.lower()):
+                                break
+                        else:
+                            continue
                     if info[datum] is None:
                         continue
                     print(u'{0}: {1} {2}: {3}'.format(node, prefix,

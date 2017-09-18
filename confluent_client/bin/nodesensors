@@ -19,9 +19,14 @@ import csv
 import datetime
 import optparse
 import os
+import signal
 import sys
 import time
 
+try:
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+except AttributeError:
+    pass
 path = os.path.dirname(os.path.realpath(__file__))
 path = os.path.realpath(os.path.join(path, '..', 'lib', 'python'))
 if path.startswith('/opt'):
@@ -141,6 +146,7 @@ def sensorpass(showout=True, appendtime=False):
                                 '%Y-%m-%dT%H:%M:%S')
                         print(u'{0}: {1}:{2}'.format(
                             node, sensedata['name'], showval).encode('utf-8'))
+                        sys.stdout.flush()
     return resultdata
 
 
