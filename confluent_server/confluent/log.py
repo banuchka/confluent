@@ -578,9 +578,9 @@ class Logger(object):
             files = self.handler.try_emit(binrecord, textrecord)
             tosyslog=str(textrecord)
             if self.isconsole and ltype == 2:
-               syslog.syslog("MSG_FROM_CONSOLE "+self.logname+" :"+tosyslog)
+               syslog.syslog("MSG_FROM_CONSOLE {0} :{1}".format(str(self.logname),str(tosyslog)))
             else:
-               syslog.syslog(self.logname+" :"+tosyslog)
+               syslog.syslog("{0} :{1}".format(str(self.logname),str(tosyslog)))
             if not files:
                 self.handler.emit(binrecord, textrecord)
                 flock(textfile, LOCK_UN)
